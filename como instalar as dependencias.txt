@@ -1,0 +1,492 @@
+Visão Geral da Solução
+O programa funcionará em quatro etapas principais:
+
+Seleção e Preparação do Áudio: O programa pedirá que você selecione o arquivo MP3. Como as bibliotecas de transcrição e identificação de locutor funcionam melhor com o formato WAV, o código irá converter automaticamente seu arquivo MP3. Isso também resolve a questão da compatibilidade de formato que você mencionou.
+
+Identificação do Locutor (Diarização): Usaremos uma biblioteca de ponta para analisar o áudio e determinar quando cada pessoa diferente fala. Ela irá segmentar o áudio em blocos como "Locutor A falou de 0:10 a 0:25", "Locutor B falou de 0:26 a 0:40", etc.
+
+Transcrição de Fala para Texto: Em seguida, usaremos um modelo poderoso (o Whisper da OpenAI) para transcrever todo o áudio para texto, incluindo as marcações de tempo para cada palavra.
+
+Combinação e Formatação: O código irá cruzar as informações das duas etapas anteriores. Ele pegará os segmentos de cada locutor e os preencherá com o texto transcrito correspondente. Finalmente, salvará tudo em formato de roteiro em arquivos Word (.docx) e PDF.
+
+1. Dependências que Precisam ser Instaladas
+Antes de rodar o código, você precisará instalar algumas bibliotecas Python e um programa externo essencial.
+
+a) Programa Externo: FFmpeg
+Esta é uma ferramenta fundamental para trabalhar com áudio e vídeo. A biblioteca pydub que usaremos para converter seu MP3 depende dela.
+
+Windows: Baixe em https://ffmpeg.org/download.html e adicione o caminho da pasta bin às variáveis de ambiente do seu sistema.
+
+MacOS (usando Homebrew): Abra o Terminal e digite brew install ffmpeg.
+
+Linux (Debian/Ubuntu): Abra o Terminal e digite sudo apt update && sudo apt install ffmpeg.
+
+b) Bibliotecas Python
+Abra seu terminal ou prompt de comando e instale as seguintes bibliotecas usando pip:
+
+Bash
+
+# Biblioteca principal para deep learning (necessária para as outras)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Modelo de transcrição de áudio da OpenAI
+pip install -U openai-whisper
+
+# Biblioteca para identificação de locutores (diarização)
+pip install pyannote.audio
+
+# Ferramenta para manipulação de áudio (conversão de MP3 para WAV)
+pip install pydub
+
+# Biblioteca para criar arquivos .docx (Word)
+pip install python-docx
+
+# Biblioteca para criar arquivos .pdf
+pip install fpdf2
+
+# Necessário para pyannote.audio funcionar corretamente
+pip install protobuf
+c) Acesso ao Modelo de Diarização (Importante!)
+A biblioteca pyannote.audio requer que você aceite os termos de uso do modelo no site Hugging Face.
+
+Vá para hf.co/pyannote/speaker-diarization-3.1 e aceite os termos.
+
+Vá para hf.co/pyannote/segmentation-3.0 e aceite os termos.
+
+Crie uma conta no Hugging Face, se ainda não tiver.
+
+Vá para suas configurações de perfil e crie um "Access Token" (Token de Acesso). Você precisará copiar este token para colar no código Python.
+
+2. O Código Python
+Abaixo está o código completo. Copie e salve-o em um arquivo chamado, por exemplo, transcrever_audio.py.
+
+Observação: Cole seu token de acesso do Hugging Face na variável HF_TOKEN.
+
+Python
+
+# -*- coding: utf-8 -*-
+
+# -----------------------------------------------------------------------------
+# Passo 1: Importar todas as bibliotecas necessárias
+# -----------------------------------------------------------------------------
+
+import os  # Para interagir com o sistema operacional, como manipular nomes de arquivos.
+import whisper  # A biblioteca de transcrição da OpenAI.
+import torch  # Biblioteca principal de machine learning (PyTorch).
+from pyannote.audio import Pipeline  # A biblioteca para identificar quem está falando (diarização).
+from pydub import AudioSegment  # Para carregar e converter arquivos de áudio.
+import tkinter as tk  # Para criar a janela de seleção de arquivo.
+from tkinter import filedialog  # Especificamente para a caixa de diálogo de seleção de arquivo.
+from docx import Document  # Para criar o arquivo Word (.docx).
+from fpdf import FPDF  # Para criar o arquivo PDF.
+import datetime  # Para formatar os tempos de início e fim.
+
+# -----------------------------------------------------------------------------
+# Passo 2: Configurações Iniciais e Constantes
+# -----------------------------------------------------------------------------
+
+# !!! IMPORTANTE !!!
+# Cole aqui o seu token de acesso do Hugging Face.
+# Este token é necessário para baixar e usar o modelo de identificação de locutores.
+HF_TOKEN = "COLE_SEU_TOKEN_DO_HUGGING_FACE_AQUI"
+
+# Verifica se um token foi inserido. Se não, o programa não pode continuar.
+if HF_TOKEN == "COLE_SEU_TOKEN_DO_HUGGING_FACE_AQUI":
+    print("ERRO: Por favor, insira seu token de acesso do Hugging Face na variável 'HF_TOKEN' no código.")
+    exit() # Encerra o script se o token não for fornecido.
+
+# Define se o processamento deve usar a GPU (mais rápido) ou a CPU.
+# O torch.cuda.is_available() verifica se uma GPU compatível está instalada.
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Usando dispositivo: {DEVICE}") # Informa ao usuário qual dispositivo será usado.
+
+# -----------------------------------------------------------------------------
+# Passo 3: Funções para Salvar o Resultado
+# -----------------------------------------------------------------------------
+
+def format_timestamp(seconds):
+    """Converte segundos em um formato de tempo H:M:S,ms."""
+    # Cria um objeto timedelta a partir dos segundos.
+    td = datetime.timedelta(seconds=seconds)
+    # Formata a string de tempo.
+    return str(td)
+
+def save_as_docx(transcript_data, output_filename):
+    """Salva a transcrição formatada em um arquivo Word (.docx)."""
+    # Cria um novo documento Word em branco.
+    doc = Document()
+    # Adiciona um título ao documento.
+    doc.add_heading(f'Transcrição de {os.path.basename(output_filename)}', level=0)
+    
+    # Itera sobre cada entrada da transcrição (cada fala de um locutor).
+    for entry in transcript_data:
+        # Formata o tempo de início e fim.
+        start_time = format_timestamp(entry['start'])
+        end_time = format_timestamp(entry['end'])
+        
+        # Cria a linha do roteiro, como "NARRADOR 1 (0:00:10.500 --> 0:00:15.200): Texto da fala..."
+        line = f"{entry['speaker']} ({start_time} --> {end_time}):\n{entry['text']}\n"
+        # Adiciona a linha ao documento.
+        doc.add_paragraph(line)
+        
+    # Salva o documento com o nome de arquivo fornecido.
+    doc.save(f"{output_filename}.docx")
+    print(f"Arquivo Word salvo como: {output_filename}.docx")
+
+def save_as_pdf(transcript_data, output_filename):
+    """Salva a transcrição formatada em um arquivo PDF."""
+    # Cria um novo objeto PDF.
+    pdf = FPDF()
+    # Adiciona uma página.
+    pdf.add_page()
+    # Define a fonte. 'DejaVu' é usada para suportar caracteres especiais como acentos.
+    pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+    pdf.set_font('DejaVu', '', 10)
+    
+    # Adiciona o título ao PDF.
+    pdf.cell(0, 10, f'Transcrição de {os.path.basename(output_filename)}', ln=True, align='C')
+    
+    # Itera sobre cada entrada da transcrição.
+    for entry in transcript_data:
+        start_time = format_timestamp(entry['start'])
+        end_time = format_timestamp(entry['end'])
+        
+        # Cria a linha do roteiro.
+        line = f"{entry['speaker']} ({start_time} --> {end_time}):\n{entry['text']}\n"
+        # Adiciona a linha ao PDF usando multi_cell para quebras de linha automáticas.
+        pdf.multi_cell(0, 5, line.encode('latin-1', 'replace').decode('latin-1'))
+        
+    # Salva o arquivo PDF.
+    pdf.output(f"{output_filename}.pdf")
+    print(f"Arquivo PDF salvo como: {output_filename}.pdf")
+
+
+# -----------------------------------------------------------------------------
+# Passo 4: Função Principal de Processamento
+# -----------------------------------------------------------------------------
+
+def process_audio(input_mp3_path):
+    """Função principal que executa todo o processo de transcrição e diarização."""
+    
+    print("Iniciando o processamento do áudio. Isso pode levar muito tempo para arquivos grandes...")
+
+    # Define os nomes dos arquivos de saída com base no nome do arquivo de entrada.
+    base_filename = os.path.splitext(os.path.basename(input_mp3_path))[0]
+    output_wav_path = f"{base_filename}_converted.wav"
+
+    # --- ETAPA A: Conversão de MP3 para WAV ---
+    print(f"1/5 - Convertendo '{input_mp3_path}' para o formato WAV...")
+    try:
+        # Carrega o arquivo MP3 usando pydub.
+        audio = AudioSegment.from_mp3(input_mp3_path)
+        # Converte para mono (1 canal) e define a taxa de amostragem para 16kHz, ideal para os modelos.
+        audio = audio.set_channels(1).set_frame_rate(16000)
+        # Exporta (salva) o áudio convertido como um arquivo WAV.
+        audio.export(output_wav_path, format="wav")
+    except Exception as e:
+        print(f"Erro ao converter o áudio. Verifique se o FFmpeg está instalado corretamente. Erro: {e}")
+        return
+
+    # --- ETAPA B: Identificação do Locutor (Diarização) ---
+    print("2/5 - Identificando os locutores no áudio (diarização)...")
+    # Carrega o pipeline de diarização pré-treinado da pyannote.audio.
+    # Usa o token de acesso para autenticação.
+    diarization_pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token=HF_TOKEN
+    ).to(torch.device(DEVICE))
+    
+    # Executa o pipeline no arquivo WAV. O resultado contém os segmentos de fala de cada locutor.
+    diarization_result = diarization_pipeline(output_wav_path)
+
+    # --- ETAPA C: Transcrição do Áudio (Fala para Texto) ---
+    print("3/5 - Transcrevendo o áudio para texto com o Whisper...")
+    # Carrega o modelo Whisper. "base" é um bom equilíbrio entre velocidade e precisão.
+    # Para maior precisão (e maior tempo de processamento), use "medium" ou "large".
+    whisper_model = whisper.load_model("base", device=DEVICE)
+    # Executa a transcrição no arquivo WAV, pedindo os timestamps de cada palavra.
+    transcription_result = whisper_model.transcribe(output_wav_path, word_timestamps=True)
+
+    # --- ETAPA D: Combinando Resultados da Diarização e Transcrição ---
+    print("4/5 - Combinando a transcrição com a identificação dos locutores...")
+    
+    # Mapeia as palavras transcritas para seus respectivos locutores.
+    word_speakers = []
+    # Itera sobre cada segmento de fala identificado pela diarização.
+    for segment, _, speaker in diarization_result.itertracks(yield_label=True):
+        # Itera sobre cada palavra transcrita pelo Whisper.
+        for word in transcription_result['segments'][0]['words']:
+            # Verifica se o tempo da palavra está dentro do segmento do locutor.
+            if segment.start <= word['start'] < segment.end:
+                # Se estiver, associa a palavra ao locutor.
+                word_speakers.append({'word': word['word'], 'start': word['start'], 'end': word['end'], 'speaker': speaker})
+
+    # Agrupa as palavras em frases contínuas para cada locutor.
+    final_transcript = []
+    if word_speakers:
+        # Inicia com a primeira palavra.
+        current_entry = {
+            'speaker': f"NARRADOR {int(word_speakers[0]['speaker'].split('_')[1]) + 1}", # Renomeia 'SPEAKER_00' para 'NARRADOR 1'
+            'text': word_speakers[0]['word'],
+            'start': word_speakers[0]['start'],
+            'end': word_speakers[0]['end']
+        }
+
+        # Itera sobre as palavras restantes.
+        for i in range(1, len(word_speakers)):
+            current_word = word_speakers[i]
+            prev_word = word_speakers[i-1]
+            
+            speaker_id = f"NARRADOR {int(current_word['speaker'].split('_')[1]) + 1}"
+            
+            # Se o locutor for o mesmo e o tempo entre as palavras for curto, agrupa.
+            if current_word['speaker'] == prev_word['speaker'] and (current_word['start'] - prev_word['end']) < 0.5:
+                current_entry['text'] += ' ' + current_word['word']
+                current_entry['end'] = current_word['end']
+            else:
+                # Se o locutor mudar ou houver uma pausa longa, salva a entrada anterior e começa uma nova.
+                final_transcript.append(current_entry)
+                current_entry = {
+                    'speaker': speaker_id,
+                    'text': current_word['word'],
+                    'start': current_word['start'],
+                    'end': current_word['end']
+                }
+        # Adiciona a última entrada à lista.
+        final_transcript.append(current_entry)
+    
+    # --- ETAPA E: Salvando os Arquivos de Saída ---
+    print(f"5/5 - Salvando os arquivos de saída com o nome base '{base_filename}'...")
+    save_as_docx(final_transcript, base_filename)
+    save_as_pdf(final_transcript, base_filename)
+
+    # Limpeza: remove o arquivo WAV temporário.
+    os.remove(output_wav_path)
+    print("\nProcesso concluído com sucesso!")
+
+
+# -----------------------------------------------------------------------------
+# Passo 5: Ponto de Entrada do Script
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # Cria uma janela raiz do tkinter, mas a oculta.
+    root = tk.Tk()
+    root.withdraw()
+
+    print("Por favor, selecione o arquivo de áudio MP3 que você deseja transcrever.")
+    
+    # Abre a caixa de diálogo para o usuário selecionar um arquivo.
+    # O usuário pode selecionar arquivos .mp3.
+    file_path = filedialog.askopenfilename(
+        title="Selecione o arquivo de áudio MP3",
+        filetypes=(("Arquivos MP3", "*.mp3"), ("Todos os arquivos", "*.*"))
+    )
+
+    # Se um arquivo foi selecionado (o caminho não está vazio).
+    if file_path:
+        try:
+            # Chama a função principal de processamento.
+            process_audio(file_path)
+        except Exception as e:
+            # Captura qualquer erro inesperado durante o processo.
+            print(f"\nOcorreu um erro inesperado: {e}")
+    else:
+        # Se nenhum arquivo foi selecionado.
+        print("Nenhum arquivo selecionado. O programa será encerrado.")
+
+3. Como Usar o Código
+Instale tudo: Certifique-se de que o FFmpeg e todas as bibliotecas Python da "Etapa 1" estão instalados.
+
+Obtenha o Token: Siga as instruções para obter seu token de acesso do Hugging Face.
+
+Cole o Token: Abra o arquivo .py que você salvou e cole seu token na linha HF_TOKEN = "COLE_SEU_TOKEN_DO_HUGGING_FACE_AQUI".
+
+Execute o Script: Abra um terminal ou prompt de comando, navegue até a pasta onde você salvou o arquivo e execute-o com o comando:
+
+Bash
+
+python transcrever_audio.py
+Selecione o Arquivo: Uma janela irá aparecer. Navegue e selecione seu arquivo MP3 com mais de 2 horas.
+
+Aguarde (Seja Paciente!): O terminal irá mostrar o progresso. Para um arquivo de áudio de mais de 2 horas e 100MB, o processo será muito demorado, podendo levar de dezenas de minutos a várias horas, dependendo da potência do seu computador (CPU ou GPU).
+
+Verifique a Saída: Ao final, dois arquivos serão criados na mesma pasta do script: nome_do_seu_arquivo.docx e nome_do_seu_arquivo.pdf, contendo a transcrição formatada como um roteiro.
+
+Respostas Diretas às Suas Perguntas
+Arquivo de texto de saída pode ter o mesmo nome? Sim. O código pega o nome do seu arquivo de entrada (ex: gravacao.mp3) e cria saídas com o mesmo nome base (ex: gravacao.docx e gravacao.pdf).
+
+Posso digitar o nome do arquivo? Sim. O código abre uma janela gráfica para você navegar e selecionar o arquivo, o que é mais fácil e seguro do que digitar o caminho completo.
+
+Transformação automática de formato? Sim. A primeira etapa do código converte seu MP3 para o formato WAV (16kHz, mono), que é ideal para as bibliotecas de IA, garantindo a compatibilidade.
+
+Qualidades de áudio informadas: O código lida bem com as qualidades do seu print (MP3, 128 kbps, Estéreo). Ele converte o estéreo para mono e padroniza a taxa de amostragem, o que é uma prática recomendada para este tipo de análise.
+
+
+
+
+
+
+
+
+
+
+
+Como Instalar o FFmpeg no Windows (Passo a Passo)
+Siga estas instruções com atenção. É mais fácil do que parece!
+
+Passo 1: Baixar o FFmpeg
+Vá para o site: https://www.gyan.dev/ffmpeg/builds/
+
+Role a página para baixo até a seção "release builds".
+
+Clique no link chamado ffmpeg-release-full.7z para baixar a versão completa.
+
+Passo 2: Descompactar o Arquivo
+O arquivo que você baixou é compactado. Você precisará de um programa como o 7-Zip (gratuito) ou o WinRAR para abri-lo.
+
+Crie uma nova pasta em um local fácil de lembrar. Eu recomendo fortemente criar uma pasta chamada ffmpeg diretamente no seu C:\. O caminho final será C:\ffmpeg.
+
+Abra o arquivo ffmpeg-release-full.7z que você baixou.
+
+Extraia (descompacte) todo o conteúdo para dentro da pasta que você criou (C:\ffmpeg).
+
+Depois de extrair, você terá uma estrutura de pastas parecida com esta: C:\ffmpeg\ffmpeg-7.0.1-full_build\bin. A pasta bin é a mais importante, pois contém os arquivos ffmpeg.exe e ffprobe.exe. Para simplificar, você pode mover o conteúdo da pasta ffmpeg-7.0.1-full_build diretamente para C:\ffmpeg, de modo que o caminho fique C:\ffmpeg\bin.
+
+Passo 3: Adicionar o FFmpeg ao PATH do Windows
+Este é o passo crucial onde "avisamos" o Windows onde encontrar o programa.
+
+Pressione a tecla Windows no seu teclado e digite variáveis de ambiente.
+
+Clique na opção "Editar as variáveis de ambiente do sistema".
+
+Na janela que abrir, clique no botão "Variáveis de Ambiente..." na parte inferior.
+
+Na nova janela, na seção de baixo chamada "Variáveis do sistema", procure pela variável chamada Path.
+
+Clique uma vez em Path para selecioná-la e depois clique no botão "Editar...".
+
+Na janela de edição do Path, clique em "Novo".
+
+Agora, cole o caminho completo para a pasta bin do FFmpeg. Se você seguiu minha recomendação, o caminho será:
+
+C:\ffmpeg\bin
+Clique em "OK" em todas as janelas para fechar e salvar as alterações.
+
+Passo 4: Verificar a Instalação
+Para ter certeza de que tudo funcionou:
+
+Feche e reabra o seu terminal (o PowerShell ou Prompt de Comando). Isso é muito importante para que ele carregue as novas configurações.
+
+No novo terminal, digite o comando abaixo e pressione Enter:
+
+Bash
+
+ffmpeg -version
+Se a instalação foi bem-sucedida, você verá um monte de texto sobre a versão do FFmpeg, informações de compilação, etc. Se aparecer um erro de "comando não encontrado", revise o Passo 3.
+
+
+
+
+
+
+
+
+
+
+
+
+A Solução: Conversão Direta com FFmpeg
+Para resolver isso, vamos mudar a estratégia. Em vez de usar a biblioteca pydub como intermediária, vamos dar a ordem de conversão diretamente ao programa FFmpeg, que é o "motor" por trás de tudo. Essa abordagem é muito mais robusta, especialmente para arquivos grandes.
+
+Vamos fazer uma pequena alteração no seu código.
+
+Modificando o Código
+Siga estes dois passos para atualizar o seu arquivo transcrever_audio.py.
+
+Passo 1: Adicionar uma Nova Biblioteca
+No início do seu arquivo, junto com os outros import, adicione esta linha para importar a biblioteca subprocess, que nos permite executar comandos do sistema:
+
+Python
+
+import subprocess # Para executar comandos externos, como o FFmpeg.
+O início do seu código ficará assim:
+
+Python
+
+import os
+import whisper
+import torch
+from pyannote.audio import Pipeline
+from pydub import AudioSegment
+import tkinter as tk
+from tkinter import filedialog
+from docx import Document
+from fpdf import FPDF
+import datetime
+import subprocess # <--- ADICIONE ESTA LINHA
+Passo 2: Substituir o Bloco de Conversão
+Agora, encontre a seção ETAPA A no seu código. Ela se parece com isto:
+
+Python
+
+    # --- ETAPA A: Conversão de MP3 para WAV ---
+    print(f"1/5 - Convertendo '{input_mp3_path}' para o formato WAV...")
+    try:
+        # Carrega o arquivo MP3 usando pydub.
+        audio = AudioSegment.from_mp3(input_mp3_path)
+        # Converte para mono (1 canal) e define a taxa de amostragem para 16kHz, ideal para os modelos.
+        audio = audio.set_channels(1).set_frame_rate(16000)
+        # Exporta (salva) o áudio convertido como um arquivo WAV.
+        audio.export(output_wav_path, format="wav")
+    except Exception as e:
+        print(f"Erro ao converter o áudio. Verifique se o FFmpeg está instalado corretamente. Erro: {e}")
+        return
+Substitua todo esse bloco (da linha # --- ETAPA A... até a linha return) pelo novo bloco abaixo:
+
+Python
+
+    # --- ETAPA A: Conversão de MP3 para WAV (Método Robusto) ---
+    print(f"1/5 - Convertendo '{input_mp3_path}' para o formato WAV usando FFmpeg diretamente...")
+    try:
+        # Constrói o comando do FFmpeg para converter o áudio.
+        # -i: arquivo de entrada
+        # -ar 16000: define a taxa de amostragem para 16kHz
+        # -ac 1: define para 1 canal de áudio (mono)
+        # -y: sobrescreve o arquivo de saída se ele já existir
+        command = [
+            'ffmpeg',
+            '-i', input_mp3_path,
+            '-ar', '16000',
+            '-ac', '1',
+            '-y',
+            output_wav_path
+        ]
+        
+        # Executa o comando FFmpeg. O 'check=True' fará o script parar se o FFmpeg falhar.
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+    except subprocess.CalledProcessError:
+        # Captura um erro se o FFmpeg falhar na conversão.
+        print(f"Erro ao converter o áudio com FFmpeg. Verifique se o FFmpeg está instalado e acessível no PATH do sistema.")
+        return
+    except Exception as e:
+        # Captura outros erros inesperados.
+        print(f"Um erro inesperado ocorreu durante a conversão: {e}")
+        return
+O Que Essa Mudança Faz?
+Comando Direto: Em vez do Python tentar gerenciar o áudio, ele simplesmente diz ao sistema operacional: "Execute o FFmpeg com estas instruções".
+
+Mais Robusto: O FFmpeg é otimizado para lidar com arquivos enormes e fará a conversão de forma muito mais eficiente e confiável.
+
+Detecção de Erro Melhorada: A linha check=True garante que, se o FFmpeg falhar por algum motivo, seu script Python irá parar com um erro claro, em vez de continuar com um arquivo corrompido.
+
+Salve o arquivo com essas alterações e execute-o novamente. Agora, o arquivo .wav gerado deve ter um tamanho compatível com o do MP3 original, e a transcrição será feita sobre o áudio completo.
+
+
+
+
+
+
+
+
