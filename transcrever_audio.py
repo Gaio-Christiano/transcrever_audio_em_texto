@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # -----------------------------------------------------------------------------
 # Passo 1: Importar todas as bibliotecas necessárias
 # -----------------------------------------------------------------------------
@@ -23,7 +21,7 @@ import subprocess # Para executar comandos externos, como o FFmpeg.
 # !!! IMPORTANTE !!!
 # Cole aqui o seu token de acesso do Hugging Face.
 # Este token é necessário para baixar e usar o modelo de identificação de locutores.
-HF_TOKEN = "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"
+HF_TOKEN = "COLE_SEU_TOKEN_DO_HUGGING_FACE_AQUI"
 
 # Verifica se um token foi inserido. Se não, o programa não pode continuar.
 if HF_TOKEN == "COLE_SEU_TOKEN_DO_HUGGING_FACE_AQUI":
@@ -257,4 +255,5 @@ if __name__ == "__main__":
             print(f"\nOcorreu um erro inesperado: {e}")
     else:
         # Se nenhum arquivo foi selecionado.
+
         print("Nenhum arquivo selecionado. O programa será encerrado.")
